@@ -30,6 +30,20 @@ export interface ContractEvent {
   in_successful_call: boolean;
 }
 
+/** An event from the cross-contract feed (GET /api/v1/events). */
+export interface GlobalEvent extends ContractEvent {
+  contract_id: string;
+  network: string;
+}
+
+export interface GlobalEventsResponse {
+  events: GlobalEvent[];
+  /** Opaque cursor for the next (older) page; empty on the last page. */
+  next_cursor: string;
+}
+
+export type EventType = "contract" | "system" | "diagnostic";
+
 export interface EventsResponse {
   events: ContractEvent[];
   cursor: string | null;
@@ -93,6 +107,15 @@ export interface StatsResponse {
   event_volume: VolumePoint[];
   invocation_count: VolumePoint[];
   stats: ContractStats;
+}
+
+/** One day of averaged per-invocation resource usage (issue #184). */
+export interface ResourceTrendPoint {
+  date: string;
+  avg_cpu_insn: number;
+  avg_mem_byte: number;
+  avg_fee: number;
+  count: number;
 }
 
 export interface ContractSummary {
@@ -266,6 +289,34 @@ export interface CompareContractEntry {
 export interface CompareResponse {
   window: string;
   contracts: CompareContractEntry[];
+}
+
+export type ChannelType = "webhook" | "slack" | "discord" | "pagerduty";
+
+export interface CreateSubscriptionRequest {
+  contract_id: string;
+  channel_type?: ChannelType;
+  /** Required for webhook, slack and discord; optional for pagerduty. */
+  webhook_url?: string;
+  /** PagerDuty integration key (pagerduty only). */
+  routing_key?: string;
+  severity_filter?: string;
+}
+
+/** Secrets are never returned: webhook_url is masked for slack/discord. */
+export interface AlertSubscription {
+  id: string;
+  contract_id: string;
+  channel_type: ChannelType;
+  webhook_url: string;
+  has_routing_key: boolean;
+  severity_filter: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubscriptionsResponse {
+  subscriptions: AlertSubscription[];
 }
 
 export interface CreateSubscriptionRequest {

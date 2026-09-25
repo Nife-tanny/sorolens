@@ -182,6 +182,9 @@ CREATE INDEX idx_events_tx_hash ON events (tx_hash);
 -- Time-range queries from the dashboard.
 CREATE INDEX idx_events_ledger_closed_at ON events (ledger_closed_at DESC);
 
+-- "Events for contract X within time range Y" (migration 000009).
+CREATE INDEX idx_events_contract_id_ledger_closed_at ON events (contract_id, ledger_closed_at);
+
 -- ============================================================
 -- invocations
 -- One row per transaction that invoked (or attempted to invoke)
@@ -313,6 +316,7 @@ CREATE INDEX idx_api_keys_hash ON api_keys (key_hash) WHERE revoked_at IS NULL;
 | `idx_events_contract_ledger` | The most common dashboard query: "show me recent events for contract X." Composite index with ledger DESC avoids sort. |
 | `idx_events_tx_hash` | Supports the invocation-detail page which shows all events emitted in a given transaction. |
 | `idx_events_ledger_closed_at` | Time-range filtering on the events feed. |
+| `idx_events_contract_id_ledger_closed_at` | Backs "events for contract X within time range Y" (contract stats window, daily activity aggregate). Leading on both columns bounds the scan; the contract/ledger index still reads every event for the contract and filters on `ledger_closed_at`. |
 | `idx_invocations_contract_ledger` | Same pattern as events; the invocation list is paginated with newest-first ordering. |
 | `idx_invocations_ledger_closed_at` | Time-range filter for resource-usage charts. |
 | `idx_invocations_status` | Supports the "show only failures" filter on the invocations list. |
@@ -471,6 +475,25 @@ Paginated event list for a contract.
   "has_more": true
 }
 ```
+
+#### `GET /api/v1/events`
+
+Cross-contract events explorer feed (all tracked contracts), **newest first**.
+Backs the dashboard's `/events` page.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `cursor` | string | (none) | Opaque cursor from the previous page's `next_cursor`. |
+| `limit` | integer | 50 | Max 200. |
+| `contract_id` | string | (none) | Contract ID prefix, case-insensitive; a full ID matches one contract. `%` and `_` match literally. |
+| `type` | string | (none) | `contract`, `system` or `diagnostic`. |
+| `network` | string | (none) | `testnet`, `mainnet`, `futurenet` or `standalone`. |
+| `since` / `until` | RFC 3339 | (none) | Inclusive bounds on `ledger_closed_at`. |
+
+**Response `200`:** `{ "events": [Event + contract_id, network], "next_cursor": "…" }`.
+`next_cursor` is empty on the last page. The keyset cursor is the event ID
+(a ledger-ordered RPC paging token), so pages stay stable while new events
+are indexed.
 
 ---
 
@@ -645,48 +668,60 @@ memoized in-process for 5 seconds.
 
 ---
 
-### 4.9 Watchdog
+### 4.9 Alert notification channels
 
-#### `GET /api/v1/watchdog/contracts`
+Critical watchdog alerts are delivered to subscribed channels, each in its
+native format (`services/indexer/internal/watchdog/notifier.go`):
 
-List contracts registered with the on-chain watchdog, as materialised by the
-indexer into `monitored_contracts`. Paginates exactly like `GET /api/v1/contracts`.
+| `channel_type` | Destination | Payload |
+|---|---|---|
+| `webhook` | any http(s) URL | Generic JSON (`contract_id`, `severity`, `message`, `timestamp`, `explorer_url`). |
+| `slack` | Slack incoming webhook (https) | Block Kit: header, contract/severity fields, message, ledger/time context, "View transaction" button. |
+| `discord` | Discord channel webhook (https) | One embed, colored by severity, with contract/severity/ledger fields. |
+| `pagerduty` | Events API v2 (`routing_key`) | `trigger` event; severity mapped Critical→`critical`, Warning→`warning`, Info→`info`; `dedup_key` = `sorolens:<contract>:<tx>` so a re-delivered alert does not open a second incident. |
 
-**Query params:**
+A 5xx response is retried once; a 4xx is logged and skipped.
 
-| Param | Type | Default | Description |
-|---|---|---|---|
-| `cursor` | string | (none) | Opaque cursor: the `next_cursor` of the previous page. |
-| `limit` | integer | 50 | Page size, 1–200. A missing, non-numeric, zero, negative, or >200 value uses the default. |
-| `network` | string | (all) | `testnet`, `mainnet`, `futurenet`, or `standalone`. |
+#### `POST /api/v1/watchdog/subscriptions`
 
-Rows are ordered by `contract_id` ascending (the primary key, so the order is
-stable and unique). The cursor is the base64 of the last returned
-`contract_id`; the next page is `WHERE contract_id > cursor ... LIMIT limit+1`.
-`next_cursor` is `""` on the last page.
+Contributor role. Body: `{ contract_id, channel_type?, webhook_url?, routing_key?, severity_filter? }`.
+`webhook_url` is required for webhook/slack/discord (https for slack and
+discord); `routing_key` is required for pagerduty and rejected otherwise. The
+contract must be monitored by the watchdog (`422` otherwise).
 
-**Response `200`:**
-```json
-{
-  "contracts": [
-    {
-      "contract_id": "CDLZFC3S...",
-      "network": "testnet",
-      "name": "escrow",
-      "owner": "GOWNER...",
-      "status": "Healthy",
-      "last_check": "2026-07-01T10:00:00Z",
-      "check_interval": 300,
-      "registered_at": "2026-07-01T09:00:00Z",
-      "updated_at": "2026-07-01T10:00:00Z"
-    }
-  ],
-  "next_cursor": "Q0RMWkZDM1M..."
-}
-```
+#### `GET /api/v1/watchdog/subscriptions` · `DELETE /api/v1/watchdog/subscriptions/:id`
 
-**Errors:**
-- `422`: `cursor` is not valid base64, or `network` is unknown (`code: INVALID_INPUT`).
+Contributor role. Responses never contain secrets: Slack/Discord webhook URLs
+are masked (`https://hooks.slack.com/services/***`) and the PagerDuty key is
+reported only as `has_routing_key`. `DELETE` returns `204`, or `404` for an
+unknown ID.
+
+#### `POST /integrations/slack/commands`
+
+Slack slash command (`/sorolens <contract_id>`), outside `/api/v1` because
+Slack posts form-encoded bodies. Each request is verified against
+`SLACK_SIGNING_SECRET` (HMAC-SHA256 of `v0:<timestamp>:<body>`, constant-time
+compare) and rejected with `401` if the signature is wrong or the timestamp is
+more than five minutes old. Replies with an ephemeral Block Kit status message.
+Returns `404` when no signing secret is configured.
+
+---
+
+### 4.10 Response caching and metrics
+
+`GET /api/v1/contracts`, `GET /api/v1/contracts/:id` and
+`GET /api/v1/watchdog/stats` are cached in Redis for `API_CACHE_TTL`
+(default 30s), keyed by method, path and sorted query string under a namespace
+(`sorolens:cache:<namespace>:…`). Only `200` responses are stored, and scope
+checks run before the cache. A successful `POST /api/v1/contracts` purges the
+`contracts` namespace (SCAN + UNLINK) before the response is sent; watchdog
+stats are written by the indexer, so they expire by TTL. Redis errors fail
+open. Responses carry `X-Cache: HIT|MISS`, and hit/miss counters are exposed
+on `GET /metrics` (see `docs/metrics.md`).
+
+The full machine-readable reference is [`docs/openapi.yaml`](docs/openapi.yaml);
+`make openapi` checks it covers every route, lints it, and regenerates the Go
+client.
 
 ---
 
