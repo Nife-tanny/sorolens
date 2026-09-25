@@ -51,7 +51,6 @@ export default function WatchdogPage() {
       const filter = networkFilter(network);
       const [s, a] = await Promise.all([
         getWatchdogStats(filter).catch(() => ZERO_STATS),
-        listMonitoredContracts({ limit: 50, network: filter }).catch(() => ({ contracts: [], next_cursor: "" })),
         listAlerts(undefined, { limit: 20, network: filter }).catch(() => ({
           alerts: [],
           next_cursor: "",
@@ -67,6 +66,61 @@ export default function WatchdogPage() {
       cancelled = true;
     };
   }, [network]);
+
+  // Only the most recent loadContracts() may write to state, so a slow
+  // response can't overwrite a newer page.
+  const loadSeq = useRef(0);
+
+  const loadContracts = useCallback(
+    async (cursor: string | null) => {
+      const seq = ++loadSeq.current;
+      setContractsLoading(true);
+      try {
+        const data = await listMonitoredContracts({
+          cursor: cursor ?? undefined,
+          limit: PAGE_SIZE,
+          network: networkFilter(network),
+        });
+        if (seq !== loadSeq.current) return;
+        setContracts(data.contracts ?? []);
+        setNextCursor(data.next_cursor ?? "");
+      } catch {
+        if (seq !== loadSeq.current) return;
+        // Backend not reachable yet: show the empty state, not an error.
+        setContracts([]);
+        setNextCursor("");
+      } finally {
+        if (seq === loadSeq.current) setContractsLoading(false);
+      }
+    },
+    [network],
+  );
+
+  useEffect(() => {
+    loadContracts(cursors[cursorIndex]);
+  }, [loadContracts, cursors, cursorIndex]);
+
+  // Reset to the first page when the network filter changes. The ref guard
+  // keeps this from firing an extra fetch on mount.
+  const prevNetwork = useRef(network);
+  useEffect(() => {
+    if (prevNetwork.current !== network) {
+      prevNetwork.current = network;
+      setCursors([null]);
+      setCursorIndex(0);
+    }
+  }, [network]);
+
+  const handleNext = () => {
+    if (!nextCursor) return;
+    setCursors([...cursors.slice(0, cursorIndex + 1), nextCursor]);
+    setCursorIndex(cursorIndex + 1);
+  };
+
+  const handlePrev = () => {
+    if (cursorIndex === 0) return;
+    setCursorIndex(cursorIndex - 1);
+  };
 
   // Fetch the next alerts page and append it to the current feed.
   async function loadMoreAlerts() {
