@@ -29,10 +29,10 @@ func (p monitoredPage) ids() []string {
 	return out
 }
 
-// seedMonitored registers n contracts that differ only in their ID, so page
+// seedManyMonitored registers n contracts that differ only in their ID, so page
 // boundaries can only come from the contract_id keyset. IDs are zero-padded
 // so lexicographic order matches creation order.
-func seedMonitored(t *testing.T, ms *store.MockStore, n int, network string) []string {
+func seedManyMonitored(t *testing.T, ms *store.MockStore, n int, network string) []string {
 	t.Helper()
 	registered := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	ids := make([]string, n)
@@ -94,7 +94,7 @@ func TestListMonitoredContractsPageBoundaries(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ms := store.NewMockStore()
-			seedMonitored(t, ms, tc.seed, "testnet")
+			seedManyMonitored(t, ms, tc.seed, "testnet")
 			page := getMonitoredPage(t, newTestHandler(ms, true, true), tc.query)
 
 			if len(page.Contracts) != tc.wantLen {
@@ -117,7 +117,7 @@ func TestListMonitoredContractsPageBoundaries(t *testing.T) {
 
 func TestListMonitoredContractsSecondPageAfterLimitPlusOne(t *testing.T) {
 	ms := store.NewMockStore()
-	ids := seedMonitored(t, ms, 6, "testnet")
+	ids := seedManyMonitored(t, ms, 6, "testnet")
 	srv := newTestHandler(ms, true, true)
 
 	first := getMonitoredPage(t, srv, url.Values{"limit": {"5"}})
@@ -145,9 +145,9 @@ func TestListMonitoredContractsFullTraversal(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ms := store.NewMockStore()
-			want := seedMonitored(t, ms, tc.seed, "testnet")
+			want := seedManyMonitored(t, ms, tc.seed, "testnet")
 			// Contracts on another network must never leak into the pages.
-			seedMonitored(t, ms, 7, "mainnet")
+			seedManyMonitored(t, ms, 7, "mainnet")
 			srv := newTestHandler(ms, true, true)
 
 			var got []string
@@ -197,7 +197,7 @@ func TestListMonitoredContractsInvalidCursor(t *testing.T) {
 	get := func(t *testing.T, path, cursor string) (int, errBody) {
 		t.Helper()
 		ms := store.NewMockStore()
-		seedMonitored(t, ms, 3, "testnet")
+		seedManyMonitored(t, ms, 3, "testnet")
 		req := httptest.NewRequest(http.MethodGet, path+"?cursor="+url.QueryEscape(cursor), nil)
 		w := httptest.NewRecorder()
 		newTestHandler(ms, true, true).ServeHTTP(w, req)
