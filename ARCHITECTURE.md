@@ -645,6 +645,51 @@ memoized in-process for 5 seconds.
 
 ---
 
+### 4.9 Watchdog
+
+#### `GET /api/v1/watchdog/contracts`
+
+List contracts registered with the on-chain watchdog, as materialised by the
+indexer into `monitored_contracts`. Paginates exactly like `GET /api/v1/contracts`.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `cursor` | string | (none) | Opaque cursor: the `next_cursor` of the previous page. |
+| `limit` | integer | 50 | Page size, 1–200. A missing, non-numeric, zero, negative, or >200 value uses the default. |
+| `network` | string | (all) | `testnet`, `mainnet`, `futurenet`, or `standalone`. |
+
+Rows are ordered by `contract_id` ascending (the primary key, so the order is
+stable and unique). The cursor is the base64 of the last returned
+`contract_id`; the next page is `WHERE contract_id > cursor ... LIMIT limit+1`.
+`next_cursor` is `""` on the last page.
+
+**Response `200`:**
+```json
+{
+  "contracts": [
+    {
+      "contract_id": "CDLZFC3S...",
+      "network": "testnet",
+      "name": "escrow",
+      "owner": "GOWNER...",
+      "status": "Healthy",
+      "last_check": "2026-07-01T10:00:00Z",
+      "check_interval": 300,
+      "registered_at": "2026-07-01T09:00:00Z",
+      "updated_at": "2026-07-01T10:00:00Z"
+    }
+  ],
+  "next_cursor": "Q0RMWkZDM1M..."
+}
+```
+
+**Errors:**
+- `422`: `cursor` is not valid base64, or `network` is unknown (`code: INVALID_INPUT`).
+
+---
+
 ## 5. Design Decisions with Rationale
 
 ### 5.1 Cron-driven indexer over a persistent worker
