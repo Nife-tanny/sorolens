@@ -36,6 +36,8 @@ export default function WatchdogPage() {
   const [contracts, setContracts] = useState<MonitoredContract[]>([]);
   const [contractsLoading, setContractsLoading] = useState(true);
   const [alerts, setAlerts] = useState<ContractAlert[] | null>(null);
+  const [alertsCursor, setAlertsCursor] = useState("");
+  const [alertsLoading, setAlertsLoading] = useState(false);
 
   // Pagination state: stack of cursors, index 0 = first page. nextCursor is
   // the API's next_cursor for the current page ("" on the last page).
@@ -49,11 +51,16 @@ export default function WatchdogPage() {
       const filter = networkFilter(network);
       const [s, a] = await Promise.all([
         getWatchdogStats(filter).catch(() => ZERO_STATS),
-        listAlerts(undefined, { limit: 20, network: filter }).catch(() => ({ alerts: [] })),
+        listMonitoredContracts({ limit: 50, network: filter }).catch(() => ({ contracts: [], next_cursor: "" })),
+        listAlerts(undefined, { limit: 20, network: filter }).catch(() => ({
+          alerts: [],
+          next_cursor: "",
+        })),
       ]);
       if (cancelled) return;
       setStats(s);
       setAlerts(a.alerts ?? []);
+      setAlertsCursor(a.next_cursor ?? "");
     }
     load();
     return () => {
@@ -61,60 +68,25 @@ export default function WatchdogPage() {
     };
   }, [network]);
 
-  // Only the most recent loadContracts() may write to state, so a slow
-  // response can't overwrite a newer page.
-  const loadSeq = useRef(0);
-
-  const loadContracts = useCallback(
-    async (cursor: string | null) => {
-      const seq = ++loadSeq.current;
-      setContractsLoading(true);
-      try {
-        const data = await listMonitoredContracts({
-          cursor: cursor ?? undefined,
-          limit: PAGE_SIZE,
-          network: networkFilter(network),
-        });
-        if (seq !== loadSeq.current) return;
-        setContracts(data.contracts ?? []);
-        setNextCursor(data.next_cursor ?? "");
-      } catch {
-        if (seq !== loadSeq.current) return;
-        // Backend not reachable yet: show the empty state, not an error.
-        setContracts([]);
-        setNextCursor("");
-      } finally {
-        if (seq === loadSeq.current) setContractsLoading(false);
-      }
-    },
-    [network],
-  );
-
-  useEffect(() => {
-    loadContracts(cursors[cursorIndex]);
-  }, [loadContracts, cursors, cursorIndex]);
-
-  // Reset to the first page when the network filter changes. The ref guard
-  // keeps this from firing an extra fetch on mount.
-  const prevNetwork = useRef(network);
-  useEffect(() => {
-    if (prevNetwork.current !== network) {
-      prevNetwork.current = network;
-      setCursors([null]);
-      setCursorIndex(0);
+  // Fetch the next alerts page and append it to the current feed.
+  async function loadMoreAlerts() {
+    if (!alertsCursor || alertsLoading) return;
+    setAlertsLoading(true);
+    try {
+      const filter = networkFilter(network);
+      const a = await listAlerts(undefined, {
+        limit: 20,
+        network: filter,
+        cursor: alertsCursor,
+      });
+      setAlerts((prev) => [...(prev ?? []), ...(a.alerts ?? [])]);
+      setAlertsCursor(a.next_cursor ?? "");
+    } catch {
+      // Keep the current feed on failure; the button stays available.
+    } finally {
+      setAlertsLoading(false);
     }
-  }, [network]);
-
-  const handleNext = () => {
-    if (!nextCursor) return;
-    setCursors([...cursors.slice(0, cursorIndex + 1), nextCursor]);
-    setCursorIndex(cursorIndex + 1);
-  };
-
-  const handlePrev = () => {
-    if (cursorIndex === 0) return;
-    setCursorIndex(cursorIndex - 1);
-  };
+  }
 
   return (
     <div className="space-y-8">
@@ -285,6 +257,18 @@ export default function WatchdogPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {alerts !== null && alertsCursor !== "" && (
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={loadMoreAlerts}
+              disabled={alertsLoading}
+              className="rounded-md border border-[var(--color-border)] px-4 py-2 text-sm transition-colors hover:bg-[var(--color-bg-card)] disabled:opacity-50"
+            >
+              {alertsLoading ? "Loading…" : "Load more alerts"}
+            </button>
           </div>
         )}
       </section>

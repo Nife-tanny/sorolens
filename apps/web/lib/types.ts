@@ -102,6 +102,7 @@ export interface ContractSummary {
   status: string;
   wasm_hash: string | null;
   added_at: string;
+  last_activity_at: string | null;
 }
 
 export interface ContractsListResponse {
@@ -163,6 +164,8 @@ export interface ContractAlert {
 
 export interface AlertsResponse {
   alerts: ContractAlert[];
+  /** Cursor for the next page; empty when the feed is exhausted. */
+  next_cursor: string;
 }
 
 export interface WatchdogStats {
